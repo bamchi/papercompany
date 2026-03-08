@@ -1018,6 +1018,81 @@ pc doctor                     # 시스템 점검
   }
 }
 
+// ─── Issues ───
+
+function issues(subArgs) {
+  const projectRoot = findProjectRoot();
+  const companyFile = resolve(projectRoot, "agents", "company.json");
+  const company = loadJSON(companyFile);
+
+  if (!company || !company.repo) {
+    console.log("❌ GitHub 레포가 설정되지 않았습니다. 먼저 'pc github setup'을 실행하세요.");
+    process.exit(1);
+  }
+
+  const repo = company.repo;
+  const sub = subArgs[0];
+
+  // pc issues create "제목" [--label role:cpo]
+  if (sub === "create" || sub === "new") {
+    const title = subArgs[1];
+    if (!title) {
+      console.log("Usage: pc issues create \"제목\" [--label role:cpo] [--milestone v1.0]");
+      process.exit(1);
+    }
+    const extra = subArgs.slice(2).join(" ");
+    try {
+      execSync(`gh issue create --repo ${repo} --title "${title}" ${extra}`, { stdio: "inherit" });
+    } catch (e) {
+      process.exit(e.status || 1);
+    }
+    return;
+  }
+
+  // pc issues show 12
+  if (sub === "show" || sub === "view") {
+    const num = subArgs[1];
+    if (!num) {
+      console.log("Usage: pc issues show [번호]");
+      process.exit(1);
+    }
+    try {
+      execSync(`gh issue view ${num} --repo ${repo}`, { stdio: "inherit" });
+    } catch (e) {
+      process.exit(e.status || 1);
+    }
+    return;
+  }
+
+  // pc issues close 12
+  if (sub === "close") {
+    const num = subArgs[1];
+    if (!num) {
+      console.log("Usage: pc issues close [번호]");
+      process.exit(1);
+    }
+    try {
+      execSync(`gh issue close ${num} --repo ${repo}`, { stdio: "inherit" });
+    } catch (e) {
+      process.exit(e.status || 1);
+    }
+    return;
+  }
+
+  // pc issues [role] — 역할별 필터 or 전체 목록
+  let labelFilter = "";
+  if (sub && !sub.startsWith("-")) {
+    // role 이름이면 라벨 필터
+    labelFilter = `--label "role:${sub}"`;
+  }
+
+  try {
+    execSync(`gh issue list --repo ${repo} ${labelFilter} --state open`, { stdio: "inherit" });
+  } catch (e) {
+    process.exit(e.status || 1);
+  }
+}
+
 // ─── Proxy to shell scripts ───
 
 function proxyToScript(script, extraArgs = []) {
@@ -1073,6 +1148,12 @@ switch (command) {
     proxyToScript("org.sh", ["fire", ...args.slice(1)]);
     break;
 
+  case "issues":
+  case "issue":
+  case "i":
+    issues(args.slice(1));
+    break;
+
   case "github":
     if (args[1] === "setup") {
       await githubSetup();
@@ -1124,6 +1205,14 @@ Setup:
   pc goals                    목표 진행률
   pc goals add [title]        목표 추가
   pc goals kr [id] [kr]       KR 추가/토글
+
+이슈 관리:
+  pc issues                   전체 이슈 목록
+  pc issues [role]            역할별 이슈 (예: pc issues cpo)
+  pc issues create "제목"     이슈 생성
+  pc issues show [번호]       이슈 상세
+  pc issues close [번호]      이슈 닫기
+  pc i                        (issues 별칭)
 
 에이전트 실행:
   pc agent [role] "[prompt]"  에이전트에게 작업 지시
