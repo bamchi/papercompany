@@ -1147,6 +1147,195 @@ pc doctor                     # 시스템 점검
   }
 }
 
+// ─── Status Dashboard ───
+
+function status() {
+  const projectRoot = findProjectRoot();
+  const agentsDir = resolve(projectRoot, "agents");
+  const companyFile = resolve(agentsDir, "company.json");
+  const orgFile = resolve(agentsDir, "org.json");
+  const goalsFile = resolve(agentsDir, "goals.json");
+  const pidFile = resolve(projectRoot, ".heartbeat.pid");
+  const stateFile = resolve(agentsDir, ".heartbeat-state.json");
+
+  const company = loadJSON(companyFile);
+  if (!company) {
+    console.log("❌ 먼저 'pc init'을 실행하세요.");
+    process.exit(1);
+  }
+
+  const org = loadJSON(orgFile);
+  const goals = loadJSON(goalsFile);
+  const hbState = loadJSON(stateFile) || {};
+  const now = Math.floor(Date.now() / 1000);
+
+  const W = 58; // 박스 너비
+  const CYAN = "\x1b[36m";
+  const GREEN = "\x1b[32m";
+  const YELLOW = "\x1b[33m";
+  const RED = "\x1b[31m";
+  const BOLD = "\x1b[1m";
+  const DIM = "\x1b[2m";
+  const NC = "\x1b[0m";
+
+  function line(c = "─") { return c.repeat(W); }
+  function box(title) { console.log(`\n${DIM}┌─${NC} ${title} ${DIM}${line().slice(title.length + 4)}┐${NC}`); }
+  function boxEnd() { console.log(`${DIM}└${line()}┘${NC}`); }
+  function row(text) { console.log(`${DIM}│${NC} ${text}`); }
+  function padR(s, n) {
+    // ANSI 코드 제거 후 길이 계산
+    const visible = s.replace(/\x1b\[\d+m/g, "");
+    const pad = Math.max(0, n - visible.length);
+    return s + " ".repeat(pad);
+  }
+
+  // ═══ 헤더 ═══
+  console.log(`\n${BOLD}  📎 ${company.name}${NC}`);
+  console.log(`  ${DIM}${company.mission}${NC}`);
+
+  // ═══ 회사 정보 ═══
+  box("🏢 회사 정보");
+  row(`${BOLD}회장님${NC}  ${company.founder}          ${BOLD}비서${NC}  ${company.secretary?.name || "미설정"}`);
+  row(`${BOLD}GitHub${NC}  ${company.repo || `${RED}미설정${NC}`}          ${BOLD}설립${NC}  ${company.createdAt || "?"}`);
+  boxEnd();
+
+  // ═══ 조직 ═══
+  if (org) {
+    const agents = org.agents || {};
+    const agentIds = Object.keys(agents);
+    const active = agentIds.filter(id => agents[id].status === "active");
+    const terminated = agentIds.filter(id => agents[id].status === "terminated");
+
+    const totalRuns = hbState.totalRuns || 0;
+    box(`👥 조직 ${DIM}(${active.length}명 활성${terminated.length > 0 ? `, ${terminated.length}명 해고` : ""} · 총 ${totalRuns}회 실행)${NC}`);
+    row(`${DIM}${padR("ID", 20)} ${padR("역할", 20)} ${padR("등급", 8)} ${padR("♥", 6)} ${padR("실행", 6)} 마지막${NC}`);
+    row(`${DIM}${line()}${NC}`);
+
+    for (const id of agentIds) {
+      const a = agents[id];
+      if (a.status !== "active") continue;
+
+      const rankLabel = a.rank === "secretary" ? `${CYAN}비서${NC}` :
+                        a.rank === "executive" ? `${YELLOW}임원${NC}` : "직원";
+      const hb = a.heartbeat > 0 ? `${a.heartbeat}s` : `${DIM}—${NC}`;
+      const runs = hbState[id]?.runCount || 0;
+      const runsStr = runs > 0 ? `${runs}회` : `${DIM}—${NC}`;
+
+      let lastRun = `${DIM}—${NC}`;
+      if (hbState[id]?.lastRun) {
+        const elapsed = now - hbState[id].lastRun;
+        if (elapsed < 60) lastRun = `${elapsed}초 전`;
+        else if (elapsed < 3600) lastRun = `${Math.floor(elapsed / 60)}분 전`;
+        else if (elapsed < 86400) lastRun = `${Math.floor(elapsed / 3600)}시간 전`;
+        else lastRun = `${Math.floor(elapsed / 86400)}일 전`;
+      }
+
+      row(`${padR(id, 20)} ${padR(a.title, 20)} ${padR(rankLabel, 8)} ${padR(hb, 6)} ${padR(runsStr, 6)} ${lastRun}`);
+    }
+
+    // 해고된 에이전트
+    for (const id of terminated) {
+      const a = agents[id];
+      const runs = hbState[id]?.runCount || 0;
+      const runsStr = runs > 0 ? `${runs}회` : "—";
+      row(`${DIM}${padR(id, 20)} ${padR(a.title, 20)} ${padR("해고", 8)} ${padR("—", 6)} ${padR(runsStr, 6)} —${NC}`);
+    }
+    boxEnd();
+  }
+
+  // ═══ 목표 ═══
+  if (goals?.goals?.length > 0) {
+    const activeGoals = goals.goals.filter(g => g.status === "active");
+    const totalKr = goals.goals.reduce((s, g) => s + (g.keyResults?.length || 0), 0);
+    const doneKr = goals.goals.reduce((s, g) => s + (g.keyResults?.filter(k => k.done)?.length || 0), 0);
+    const overallPct = totalKr > 0 ? Math.round(doneKr / totalKr * 100) : 0;
+
+    box(`🎯 목표 ${DIM}(${activeGoals.length}개 활성, 전체 ${overallPct}%)${NC}`);
+
+    for (const g of goals.goals) {
+      const kr = g.keyResults || [];
+      const done = kr.filter(k => k.done).length;
+      const total = kr.length;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+
+      const filled = Math.round(pct / 10);
+      const bar = "█".repeat(filled) + "░".repeat(10 - filled);
+
+      const statusIcon = g.status === "completed" ? "✅" : g.status === "paused" ? "⏸ " : "🟢";
+      const pctColor = pct === 100 ? GREEN : pct > 0 ? YELLOW : DIM;
+
+      row(`${statusIcon} ${padR(g.id, 9)} ${padR(g.title, 18)} ${DIM}[${NC}${pctColor}${bar}${NC}${DIM}]${NC} ${pctColor}${String(pct).padStart(3)}%${NC}  ${done}/${total} KR`);
+    }
+    boxEnd();
+  } else {
+    box("🎯 목표");
+    row(`${DIM}목표가 없습니다. pc goals add "제목" 으로 추가하세요.${NC}`);
+    boxEnd();
+  }
+
+  // ═══ GitHub Issues 요약 ═══
+  if (company.repo) {
+    const ghCheck = run("gh --version 2>/dev/null");
+    if (ghCheck) {
+      const openJson = run(`gh issue list --repo ${company.repo} --state open --json number,labels --limit 200 2>/dev/null`);
+      try {
+        const openIssues = JSON.parse(openJson || "[]");
+        const closedCount = run(`gh issue list --repo ${company.repo} --state closed --json number --limit 1000 2>/dev/null`);
+        const closed = JSON.parse(closedCount || "[]").length;
+
+        // 역할별 집계
+        const roleCounts = {};
+        for (const issue of openIssues) {
+          for (const label of (issue.labels || [])) {
+            if (label.name?.startsWith("role:")) {
+              const role = label.name.replace("role:", "");
+              roleCounts[role] = (roleCounts[role] || 0) + 1;
+            }
+          }
+        }
+
+        box(`📋 GitHub Issues ${DIM}(open: ${openIssues.length}, closed: ${closed})${NC}`);
+        if (Object.keys(roleCounts).length > 0) {
+          const parts = Object.entries(roleCounts).map(([r, c]) => `${r}: ${BOLD}${c}${NC}`);
+          row(parts.join("  │  "));
+        } else if (openIssues.length === 0) {
+          row(`${DIM}열린 이슈가 없습니다.${NC}`);
+        }
+        boxEnd();
+      } catch {
+        // gh 실패 시 무시
+      }
+    }
+  }
+
+  // ═══ Heartbeat ═══
+  let hbRunning = false;
+  let hbPid = "";
+  if (existsSync(pidFile)) {
+    hbPid = readFileSync(pidFile, "utf-8").trim();
+    const check = run(`kill -0 ${hbPid} 2>&1`);
+    hbRunning = !check.includes("No such process") && !check.includes("not permitted") || check === "";
+    // kill -0 성공 시 stdout이 빈 문자열
+    if (run(`ps -p ${hbPid} -o pid= 2>/dev/null`).trim()) {
+      hbRunning = true;
+    }
+  }
+
+  const hbStatus = hbRunning ? `${GREEN}●${NC} 실행 중 ${DIM}(PID: ${hbPid})${NC}` : `${RED}●${NC} 중지`;
+
+  // heartbeat 활성 에이전트 수
+  const hbAgents = org ? Object.entries(org.agents || {}).filter(([_, a]) => a.status === "active" && a.heartbeat > 0) : [];
+
+  box(`💓 Heartbeat`);
+  row(`데몬: ${hbStatus}    활성: ${hbAgents.length}개 에이전트`);
+  if (hbAgents.length > 0) {
+    row(`${DIM}${hbAgents.map(([id, a]) => `${id}(${a.heartbeat}s)`).join("  ")}${NC}`);
+  }
+  boxEnd();
+
+  console.log();
+}
+
 // ─── Issues ───
 
 function issues(subArgs) {
@@ -1277,6 +1466,12 @@ switch (command) {
     proxyToScript("org.sh", ["fire", ...args.slice(1)]);
     break;
 
+  case "status":
+  case "s":
+  case "dashboard":
+    status();
+    break;
+
   case "issues":
   case "issue":
   case "i":
@@ -1354,6 +1549,10 @@ Heartbeat:
   pc heartbeat once           1회 실행 (테스트용)
   pc heartbeat set [id] [sec] 에이전트별 주기 설정
   pc hb                       (heartbeat 별칭)
+
+대시보드:
+  pc status                   전체 현황 대시보드
+  pc s                        (status 별칭)
 
 진단:
   pc doctor                   시스템 점검 + 자동 수정

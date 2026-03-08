@@ -34,12 +34,13 @@ get_last_run() {
   jq -r --arg id "$agent_id" '.[$id].lastRun // 0' "$STATE_FILE"
 }
 
-# 마지막 실행 시각 업데이트
+# 마지막 실행 시각 + 실행 횟수 업데이트
 set_last_run() {
   local agent_id="$1"
   local now=$(date +%s)
   jq --arg id "$agent_id" --argjson now "$now" \
-    '.[$id] = {lastRun: $now}' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+    '.[$id].lastRun = $now | .[$id].runCount = ((.[$id].runCount // 0) + 1) | .totalRuns = ((.totalRuns // 0) + 1)' \
+    "$STATE_FILE" > "${STATE_FILE}.tmp" \
     && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 }
 

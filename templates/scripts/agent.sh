@@ -42,6 +42,15 @@ if [ -f "$PROJECT_DIR/agents/company.json" ]; then
   COMPANY_NAME=$(jq -r '.name' "$PROJECT_DIR/agents/company.json")
 fi
 
+# 실행 횟수 기록
+STATE_FILE="$PROJECT_DIR/agents/.heartbeat-state.json"
+if [ ! -f "$STATE_FILE" ]; then echo '{}' > "$STATE_FILE"; fi
+STAT_ID="$AGENT_ID"
+NOW=$(date +%s)
+jq --arg id "$STAT_ID" --argjson now "$NOW" \
+  '.[$id].lastRun = $now | .[$id].runCount = ((.[$id].runCount // 0) + 1) | .totalRuns = ((.totalRuns // 0) + 1)' \
+  "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
 echo "🚀 ${COMPANY_NAME:+[$COMPANY_NAME] }[$ROLE] 에이전트 실행..."
 echo "📋 Prompt: $PROMPT"
 echo "---"
