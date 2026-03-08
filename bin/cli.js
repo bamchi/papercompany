@@ -767,7 +767,27 @@ async function doctor() {
       }
     }
 
-    // org.json에는 있지만 AGENTS.md 폴더가 있는 유령 에이전트
+    // manages 정합성 수정 — terminated 에이전트가 manages에 남아있는 경우
+    const manageFixes = [];
+    for (const id of activeAgents) {
+      const manages = agents[id].manages || [];
+      for (const sub of manages) {
+        if (!agents[sub]) {
+          manageFixes.push({ manager: id, sub, reason: "에이전트 없음" });
+        } else if (agents[sub].status === "terminated") {
+          manageFixes.push({ manager: id, sub, reason: "해고 상태" });
+        }
+      }
+    }
+    if (manageFixes.length > 0) {
+      fixes.push({
+        id: "fix-manages", label: `manages 배열 정리 (${manageFixes.length}건)`,
+        run: "fix-manages", data: manageFixes
+      });
+    }
+
+    // org.json에는 없지만 AGENTS.md 폴더가 있는 유령 에이전트
+    const orphanFolders = [];
     if (existsSync(agentsDir)) {
       const folders = readdirSync(agentsDir).filter(f => {
         const fp = resolve(agentsDir, f);
@@ -778,8 +798,15 @@ async function doctor() {
         const orgId = folder === "ceo" ? "secretary" : folder;
         if (!agents[orgId]) {
           warn(`agents/${folder}/AGENTS.md 존재하지만 org.json에 미등록`);
+          orphanFolders.push(folder);
         }
       }
+    }
+    if (orphanFolders.length > 0) {
+      fixes.push({
+        id: "fix-orphans", label: `미등록 에이전트 처리 (${orphanFolders.join(", ")})`,
+        run: "fix-orphans", data: orphanFolders
+      });
     }
 
     pass(`총 에이전트: ${activeAgents.length}명 활성 / ${agentIds.length}명 전체`);
@@ -960,10 +987,6 @@ pc doctor                     # 시스템 점검
       break;
     }
 
-    case "github":
-      console.log("   → 'pc github setup'을 직접 실행하세요.");
-      break;
-
     case "migrate-secretary": {
       const orgPath = resolve(agentsDir, "org.json");
       const org = loadJSON(orgPath);
@@ -986,8 +1009,114 @@ pc doctor                     # 시스템 점검
       break;
     }
 
-    case "hire-exec":
-      console.log("   → 'pc hire cpo \"Chief Product Officer\" executive'를 실행하세요.");
+    case "hire-exec": {
+      const today = new Date().toISOString().split("T")[0];
+      const orgPath = resolve(agentsDir, "org.json");
+      const org = loadJSON(orgPath);
+      org.agents.cpo = {
+        name: "CPO", title: "Chief Product Officer", reportsTo: "secretary",
+        manages: [], type: "agent", rank: "executive",
+        hirePermission: "via-secretary", status: "active", hiredAt: today
+      };
+      if (org.agents.secretary?.manages && !org.agents.secretary.manages.includes("cpo")) {
+        org.agents.secretary.manages.push("cpo");
+      }
+      org.updated = today;
+      writeFileSync(orgPath, JSON.stringify(org, null, 2) + "\n");
+      // AGENTS.md 생성
+      const company2 = loadJSON(companyFile);
+      const secName2 = company2.secretary?.name || "비서";
+      mkdirSync(resolve(agentsDir, "cpo"), { recursive: true });
+      if (existsSync(resolve(agentsDir, "TEMPLATE.md"))) {
+        const tmpl = readFileSync(resolve(agentsDir, "TEMPLATE.md"), "utf-8");
+        const filled = tmpl
+          .replace(/\[에이전트명\]/g, "CPO")
+          .replace(/\[회사명\]/g, company2.name)
+          .replace(/\[역할\]/g, "Chief Product Officer")
+          .replace(/\[company\.name\]/g, company2.name)
+          .replace(/\[company\.founder\]/g, company2.founder)
+          .replace(/\[company\.secretary\.name\]/g, secName2)
+          .replace(/\[reportsTo\]/g, "secretary");
+        writeFileSync(resolve(agentsDir, "cpo", "AGENTS.md"), filled);
+      }
+      console.log("   ✅ CPO 채용 완료");
+      break;
+    }
+
+    case "fix-manages": {
+      const orgPath = resolve(agentsDir, "org.json");
+      const org = loadJSON(orgPath);
+      for (const item of (fix.data || [])) {
+        const manages = org.agents[item.manager]?.manages || [];
+        org.agents[item.manager].manages = manages.filter(m => m !== item.sub);
+        console.log(`   ✅ ${item.manager}.manages에서 '${item.sub}' 제거 (${item.reason})`);
+      }
+      org.updated = new Date().toISOString().split("T")[0];
+      writeFileSync(orgPath, JSON.stringify(org, null, 2) + "\n");
+      break;
+    }
+
+    case "fix-orphans": {
+      const orgPath = resolve(agentsDir, "org.json");
+      const org = loadJSON(orgPath);
+      const company3 = loadJSON(companyFile);
+      const today = new Date().toISOString().split("T")[0];
+
+      for (const folder of (fix.data || [])) {
+        const agentId = folder === "ceo" ? "secretary" : folder;
+
+        // AGENTS.md에서 title 추출 시도
+        const mdPath = resolve(agentsDir, folder, "AGENTS.md");
+        const mdContent = readFileSync(mdPath, "utf-8");
+        const titleMatch = mdContent.match(/^#\s+(.+)/m);
+        const title = titleMatch ? titleMatch[1].trim() : folder;
+
+        console.log(`   📋 ${folder} (${title})`);
+
+        if (process.stdin.isTTY) {
+          const action = await ask(`      등록(r) / 삭제(d) / 건너뛰기(Enter): `);
+          if (action.toLowerCase() === "r") {
+            // org.json에 등록
+            org.agents[agentId] = {
+              name: agentId, title: title, reportsTo: "secretary",
+              manages: [], type: "agent", rank: "staff",
+              hirePermission: "none", status: "active", hiredAt: today
+            };
+            // secretary.manages에 추가
+            if (org.agents.secretary?.manages && !org.agents.secretary.manages.includes(agentId)) {
+              org.agents.secretary.manages.push(agentId);
+            }
+            // GitHub 라벨 생성
+            if (company3.repo) {
+              run(`gh label create "role:${agentId}" --repo ${company3.repo} --color "0e8a16" --description "${title} 담당" --force 2>&1`);
+            }
+            console.log(`      ✅ org.json에 등록 완료`);
+          } else if (action.toLowerCase() === "d") {
+            // 폴더 삭제
+            const rmPath = resolve(agentsDir, folder);
+            execSync(`rm -rf "${rmPath}"`);
+            console.log(`      ✅ agents/${folder}/ 삭제 완료`);
+          } else {
+            console.log(`      ⏭️  건너뜀`);
+          }
+        } else {
+          // non-interactive: 등록
+          org.agents[agentId] = {
+            name: agentId, title: title, reportsTo: "secretary",
+            manages: [], type: "agent", rank: "staff",
+            hirePermission: "none", status: "active", hiredAt: today
+          };
+          console.log(`      ✅ org.json에 등록 완료 (자동)`);
+        }
+      }
+
+      org.updated = today;
+      writeFileSync(orgPath, JSON.stringify(org, null, 2) + "\n");
+      break;
+    }
+
+    case "github":
+      await githubSetup();
       break;
 
     case "fix-agents-md": {
@@ -1222,6 +1351,7 @@ Heartbeat:
   pc heartbeat start          데몬 시작 (백그라운드)
   pc heartbeat stop           데몬 중지
   pc heartbeat status         상태 확인
+  pc heartbeat once           1회 실행 (테스트용)
   pc heartbeat set [id] [sec] 에이전트별 주기 설정
   pc hb                       (heartbeat 별칭)
 
