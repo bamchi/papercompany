@@ -546,6 +546,478 @@ async function githubSetup() {
   console.log();
 }
 
+// ─── Doctor ───
+
+async function doctor() {
+  const projectRoot = findProjectRoot();
+  const agentsDir = resolve(projectRoot, "agents");
+  const companyFile = resolve(agentsDir, "company.json");
+  const orgFile = resolve(agentsDir, "org.json");
+  const goalsFile = resolve(agentsDir, "goals.json");
+  const templateFile = resolve(agentsDir, "TEMPLATE.md");
+
+  console.log("\n🩺 papercompany doctor\n");
+
+  let errors = 0;
+  let warnings = 0;
+  let fixes = [];
+
+  function pass(msg) { console.log(`  ✅ ${msg}`); }
+  function fail(msg) { console.log(`  ❌ ${msg}`); errors++; }
+  function warn(msg) { console.log(`  ⚠️  ${msg}`); warnings++; }
+
+  // ── 1. 핵심 파일 존재 ──
+  console.log("── 핵심 파일 ──");
+
+  if (!existsSync(companyFile)) {
+    fail("agents/company.json 없음");
+    fixes.push({ id: "init", label: "pc init 실행 (전체 초기화)", run: "init" });
+    // company.json 없으면 나머지 검사 불가
+    console.log(`\n📊 결과: ${errors} 오류, ${warnings} 경고\n`);
+    console.log("💡 먼저 'pc init'을 실행하세요.");
+    closeRl();
+    return;
+  }
+  pass("agents/company.json");
+
+  if (!existsSync(orgFile)) {
+    fail("agents/org.json 없음");
+    fixes.push({ id: "org", label: "org.json 재생성", run: "org" });
+  } else {
+    pass("agents/org.json");
+  }
+
+  if (!existsSync(goalsFile)) {
+    fail("agents/goals.json 없음");
+    fixes.push({ id: "goals", label: "goals.json 재생성 (빈 목표)", run: "goals" });
+  } else {
+    pass("agents/goals.json");
+  }
+
+  if (!existsSync(templateFile)) {
+    fail("agents/TEMPLATE.md 없음");
+    fixes.push({ id: "template", label: "TEMPLATE.md 복사", run: "template" });
+  } else {
+    pass("agents/TEMPLATE.md");
+  }
+
+  if (!existsSync(resolve(projectRoot, "scripts", "org.sh"))) {
+    fail("scripts/org.sh 없음");
+    fixes.push({ id: "scripts", label: "스크립트 재복사", run: "scripts" });
+  } else {
+    pass("scripts/org.sh");
+  }
+
+  if (!existsSync(resolve(projectRoot, "scripts", "agent.sh"))) {
+    fail("scripts/agent.sh 없음");
+    if (!fixes.find(f => f.id === "scripts")) {
+      fixes.push({ id: "scripts", label: "스크립트 재복사", run: "scripts" });
+    }
+  } else {
+    pass("scripts/agent.sh");
+  }
+
+  if (!existsSync(resolve(projectRoot, "CLAUDE.md"))) {
+    warn("CLAUDE.md 없음 (에이전트가 프로젝트를 이해하지 못할 수 있음)");
+    fixes.push({ id: "claude", label: "CLAUDE.md 재생성", run: "claude" });
+  } else {
+    pass("CLAUDE.md");
+  }
+
+  // ── 2. company.json 검증 ──
+  console.log("\n── 회사 설정 ──");
+  const company = loadJSON(companyFile);
+
+  if (!company.name || company.name === "My Company") {
+    warn("회사 이름이 기본값입니다");
+  } else {
+    pass(`회사: ${company.name}`);
+  }
+
+  if (!company.founder || company.founder === "회장님") {
+    warn("회장님 이름이 기본값입니다");
+  } else {
+    pass(`회장님: ${company.founder}`);
+  }
+
+  if (!company.secretary || !company.secretary.name || company.secretary.name === "비서") {
+    warn("비서 이름이 기본값입니다");
+  } else {
+    pass(`비서: ${company.secretary.name}`);
+  }
+
+  if (!company.mission || company.mission === "TBD") {
+    warn("미션이 설정되지 않았습니다");
+  } else {
+    pass(`미션: ${company.mission}`);
+  }
+
+  // ── 3. GitHub 설정 ──
+  console.log("\n── GitHub ──");
+  if (!company.repo) {
+    fail("GitHub 레포 미설정 (에이전트 간 이슈 소통 불가)");
+    fixes.push({ id: "github", label: "pc github setup 실행", run: "github" });
+  } else {
+    pass(`레포: ${company.repo}`);
+
+    // gh CLI 확인
+    const ghVersion = run("gh --version 2>/dev/null");
+    if (!ghVersion) {
+      warn("gh CLI 미설치 (https://cli.github.com/)");
+    } else {
+      pass("gh CLI 설치됨");
+
+      const ghAuth = run("gh auth status 2>&1");
+      if (ghAuth.includes("not logged")) {
+        warn("gh CLI 미인증 (gh auth login 필요)");
+      } else {
+        pass("gh CLI 인증됨");
+
+        // 레포 접근 확인
+        const repoCheck = run(`gh repo view ${company.repo} --json name 2>&1`);
+        if (repoCheck.includes("not found") || repoCheck.includes("Could not resolve")) {
+          fail(`레포 '${company.repo}' 접근 불가`);
+          fixes.push({ id: "github", label: "pc github setup 실행", run: "github" });
+        } else {
+          pass("레포 접근 가능");
+
+          // 라벨 확인
+          const labelsOut = run(`gh label list --repo ${company.repo} --limit 100 2>&1`);
+          const hasRoleLabels = labelsOut.includes("role:");
+          const hasPipelineLabels = labelsOut.includes("pipeline:");
+          if (!hasRoleLabels || !hasPipelineLabels) {
+            warn("GitHub 라벨 누락 (role: 또는 pipeline:)");
+            if (!fixes.find(f => f.id === "github")) {
+              fixes.push({ id: "github", label: "pc github setup 실행 (라벨 재생성)", run: "github" });
+            }
+          } else {
+            pass("GitHub 라벨 설정됨");
+          }
+        }
+      }
+    }
+
+    // git remote 확인
+    if (existsSync(resolve(projectRoot, ".git"))) {
+      const remotes = run("git remote -v");
+      if (!remotes.includes("origin")) {
+        warn("git remote origin 미설정");
+      } else {
+        pass("git remote origin 설정됨");
+      }
+    }
+  }
+
+  // ── 4. 조직 검증 ──
+  console.log("\n── 조직 ──");
+  const org = loadJSON(orgFile);
+
+  if (org) {
+    const agents = org.agents || {};
+    const agentIds = Object.keys(agents);
+    const activeAgents = agentIds.filter(id => agents[id].status === "active");
+
+    // 비서 확인
+    if (!agents.secretary) {
+      fail("비서(secretary) 에이전트 없음 in org.json");
+      // 레거시 taeyeon 키 확인
+      if (agents.taeyeon) {
+        warn("레거시 'taeyeon' 키 발견 — 'secretary'로 마이그레이션 필요");
+        fixes.push({ id: "migrate-secretary", label: "비서 키 마이그레이션 (taeyeon → secretary)", run: "migrate-secretary" });
+      }
+    } else {
+      pass(`비서: ${agents.secretary.name} (${agents.secretary.title})`);
+    }
+
+    // C-level(임원) 확인
+    const executives = activeAgents.filter(id => agents[id].rank === "executive");
+    if (executives.length === 0) {
+      fail("활성 임원(C-level) 에이전트 없음 — 최소 1명 필요");
+      fixes.push({ id: "hire-exec", label: "임원 에이전트 채용 (CPO 추천)", run: "hire-exec" });
+    } else {
+      pass(`임원: ${executives.map(id => agents[id].name || id).join(", ")} (${executives.length}명)`);
+    }
+
+    // AGENTS.md 파일 존재 확인
+    const missingMd = [];
+    for (const id of activeAgents) {
+      // secretary → ceo 폴더, 나머지는 id 그대로
+      const folderName = id === "secretary" ? "ceo" : id;
+      const mdPath = resolve(agentsDir, folderName, "AGENTS.md");
+      if (!existsSync(mdPath)) {
+        missingMd.push(id);
+      }
+    }
+    if (missingMd.length > 0) {
+      fail(`AGENTS.md 누락: ${missingMd.join(", ")}`);
+      fixes.push({ id: "fix-agents-md", label: "누락된 AGENTS.md 생성", run: "fix-agents-md", data: missingMd });
+    } else {
+      pass(`AGENTS.md: ${activeAgents.length}개 모두 존재`);
+    }
+
+    // manages 정합성 — manages에 있는데 org.json에 없거나 terminated
+    for (const id of activeAgents) {
+      const manages = agents[id].manages || [];
+      for (const sub of manages) {
+        if (!agents[sub]) {
+          warn(`${id}.manages에 '${sub}' 있지만 org.json에 에이전트 없음`);
+        } else if (agents[sub].status === "terminated") {
+          warn(`${id}.manages에 '${sub}' 있지만 해고 상태`);
+        }
+      }
+    }
+
+    // org.json에는 있지만 AGENTS.md 폴더가 있는 유령 에이전트
+    if (existsSync(agentsDir)) {
+      const folders = readdirSync(agentsDir).filter(f => {
+        const fp = resolve(agentsDir, f);
+        return statSync(fp).isDirectory() && existsSync(resolve(fp, "AGENTS.md"));
+      });
+      for (const folder of folders) {
+        // ceo → secretary 매핑
+        const orgId = folder === "ceo" ? "secretary" : folder;
+        if (!agents[orgId]) {
+          warn(`agents/${folder}/AGENTS.md 존재하지만 org.json에 미등록`);
+        }
+      }
+    }
+
+    pass(`총 에이전트: ${activeAgents.length}명 활성 / ${agentIds.length}명 전체`);
+  }
+
+  // ── 5. 목표 검증 ──
+  console.log("\n── 목표 ──");
+  const goals = loadJSON(goalsFile);
+
+  if (goals) {
+    if (!goals.goals || goals.goals.length === 0) {
+      warn("목표가 없습니다 — 'pc goals add' 로 추가하세요");
+    } else {
+      const activeGoals = goals.goals.filter(g => g.status === "active");
+      pass(`목표: ${activeGoals.length}개 활성 / ${goals.goals.length}개 전체`);
+
+      // KR 없는 목표
+      const noKr = goals.goals.filter(g => g.status === "active" && (!g.keyResults || g.keyResults.length === 0));
+      if (noKr.length > 0) {
+        warn(`KR 없는 목표: ${noKr.map(g => g.id).join(", ")}`);
+      }
+    }
+  }
+
+  // ── 6. 의존성 ──
+  console.log("\n── 의존성 ──");
+  const jqVersion = run("jq --version 2>/dev/null");
+  if (!jqVersion) {
+    fail("jq 미설치 (org.sh에 필요)");
+  } else {
+    pass(`jq ${jqVersion.trim()}`);
+  }
+
+  const claudeVersion = run("claude --version 2>/dev/null");
+  if (!claudeVersion) {
+    warn("claude CLI 미설치 (에이전트 실행에 필요)");
+  } else {
+    pass(`claude ${claudeVersion.trim()}`);
+  }
+
+  // ── 결과 ──
+  console.log(`\n${"─".repeat(40)}`);
+  if (errors === 0 && warnings === 0) {
+    console.log("🎉 모든 검사 통과! 시스템이 정상입니다.\n");
+  } else {
+    console.log(`📊 결과: ${errors} 오류, ${warnings} 경고\n`);
+  }
+
+  // ── 자동 수정 제안 ──
+  if (fixes.length > 0) {
+    console.log("🔧 자동 수정 가능:");
+    for (let i = 0; i < fixes.length; i++) {
+      console.log(`  ${i + 1}. ${fixes[i].label}`);
+    }
+
+    if (process.stdin.isTTY) {
+      console.log();
+      const answer = await ask("수정할 항목 번호를 입력하세요 (전체: a, 건너뛰기: Enter): ");
+
+      if (answer.toLowerCase() === "a") {
+        for (const fix of fixes) {
+          await applyFix(fix, projectRoot);
+        }
+      } else if (answer) {
+        const idx = parseInt(answer) - 1;
+        if (idx >= 0 && idx < fixes.length) {
+          await applyFix(fixes[idx], projectRoot);
+        }
+      }
+    } else {
+      console.log("\n💡 대화형 모드에서 'pc doctor'를 실행하면 자동 수정을 선택할 수 있습니다.\n");
+    }
+  }
+
+  closeRl();
+}
+
+async function applyFix(fix, projectRoot) {
+  const agentsDir = resolve(projectRoot, "agents");
+  const companyFile = resolve(agentsDir, "company.json");
+
+  console.log(`\n🔧 수정 중: ${fix.label}...`);
+
+  switch (fix.run) {
+    case "init":
+      console.log("   → 'pc init'을 직접 실행하세요.");
+      break;
+
+    case "org": {
+      const company = loadJSON(companyFile);
+      const today = new Date().toISOString().split("T")[0];
+      const orgJSON = {
+        updated: today,
+        agents: {
+          secretary: {
+            name: company.secretary.name, title: "비서 / CTO", reportsTo: null,
+            manages: ["cpo", "cdo", "founding-engineer"],
+            type: "orchestrator", rank: "secretary",
+            hirePermission: "direct", status: "active", hiredAt: today
+          },
+          cpo: {
+            name: "CPO", title: "Chief Product Officer", reportsTo: "secretary",
+            manages: [], type: "agent", rank: "executive",
+            hirePermission: "via-secretary", status: "active", hiredAt: today
+          },
+          cdo: {
+            name: "CDO", title: "Chief Design Officer", reportsTo: "secretary",
+            manages: [], type: "agent", rank: "executive",
+            hirePermission: "via-secretary", status: "active", hiredAt: today
+          },
+          "founding-engineer": {
+            name: "Founding Engineer", title: "풀스택 개발자", reportsTo: "secretary",
+            manages: [], type: "agent", rank: "staff",
+            hirePermission: "none", status: "active", hiredAt: today
+          }
+        }
+      };
+      writeFileSync(resolve(agentsDir, "org.json"), JSON.stringify(orgJSON, null, 2) + "\n");
+      console.log("   ✅ org.json 생성 완료");
+      break;
+    }
+
+    case "goals":
+      writeFileSync(resolve(agentsDir, "goals.json"), JSON.stringify({ goals: [] }, null, 2) + "\n");
+      console.log("   ✅ goals.json 생성 완료");
+      break;
+
+    case "template":
+      copyDir(resolve(TEMPLATES_DIR, "agents"), agentsDir);
+      console.log("   ✅ TEMPLATE.md 복사 완료");
+      break;
+
+    case "scripts":
+      copyDir(resolve(TEMPLATES_DIR, "scripts"), resolve(projectRoot, "scripts"));
+      for (const f of readdirSync(resolve(projectRoot, "scripts"))) {
+        const fp = resolve(projectRoot, "scripts", f);
+        if (statSync(fp).isFile()) execSync(`chmod +x "${fp}"`);
+      }
+      console.log("   ✅ 스크립트 복사 완료");
+      break;
+
+    case "claude": {
+      const company = loadJSON(companyFile);
+      const secName = company.secretary?.name || "비서";
+      const claudeMd = `# CLAUDE.md — ${company.name}
+
+## 프로젝트 개요
+${company.mission}
+
+## AI 회사 시스템 (papercompany)
+이 프로젝트는 **papercompany 멀티에이전트 시스템**으로 운영된다.
+
+- **회장님**: ${company.founder} (사용자)
+- **비서/오케스트레이터**: ${secName} (\`agents/ceo/AGENTS.md\`)
+- **조직**: \`agents/org.json\`
+- **목표**: \`agents/goals.json\`
+- **회사 정보**: \`agents/company.json\`
+
+### 보고 체계
+- 에이전트 → ${secName}(비서) → 회장님
+- GitHub Issues 코멘트가 유일한 소통 채널
+
+## 커맨드
+\`\`\`bash
+pc tree                       # 조직도
+pc list                       # 에이전트 목록
+pc hire [id] [title]          # 에이전트 채용
+pc fire [id]                  # 에이전트 해고
+pc goals                      # 목표 진행률
+pc goals add [title]          # 목표 추가
+pc goals kr [id] [kr]         # KR 추가/토글
+pc agent [role] "[prompt]"    # 에이전트 실행
+pc doctor                     # 시스템 점검
+\`\`\`
+`;
+      writeFileSync(resolve(projectRoot, "CLAUDE.md"), claudeMd);
+      console.log("   ✅ CLAUDE.md 생성 완료");
+      break;
+    }
+
+    case "github":
+      console.log("   → 'pc github setup'을 직접 실행하세요.");
+      break;
+
+    case "migrate-secretary": {
+      const orgPath = resolve(agentsDir, "org.json");
+      const org = loadJSON(orgPath);
+      if (org.agents.taeyeon) {
+        org.agents.secretary = { ...org.agents.taeyeon };
+        delete org.agents.taeyeon;
+        // reportsTo 참조도 수정
+        for (const [id, agent] of Object.entries(org.agents)) {
+          if (agent.reportsTo === "taeyeon") {
+            agent.reportsTo = "secretary";
+          }
+          if (agent.manages) {
+            agent.manages = agent.manages.map(m => m === "taeyeon" ? "secretary" : m);
+          }
+        }
+        org.updated = new Date().toISOString().split("T")[0];
+        writeFileSync(orgPath, JSON.stringify(org, null, 2) + "\n");
+        console.log("   ✅ taeyeon → secretary 마이그레이션 완료");
+      }
+      break;
+    }
+
+    case "hire-exec":
+      console.log("   → 'pc hire cpo \"Chief Product Officer\" executive'를 실행하세요.");
+      break;
+
+    case "fix-agents-md": {
+      const company = loadJSON(companyFile);
+      const secName = company.secretary?.name || "비서";
+      for (const id of (fix.data || [])) {
+        const folderName = id === "secretary" ? "ceo" : id;
+        const agentDir = resolve(agentsDir, folderName);
+        mkdirSync(agentDir, { recursive: true });
+        const org = loadJSON(resolve(agentsDir, "org.json"));
+        const agent = org?.agents?.[id];
+        if (agent && existsSync(resolve(agentsDir, "TEMPLATE.md"))) {
+          const template = readFileSync(resolve(agentsDir, "TEMPLATE.md"), "utf-8");
+          const filled = template
+            .replace(/\[에이전트명\]/g, agent.name || id)
+            .replace(/\[회사명\]/g, company.name)
+            .replace(/\[역할\]/g, agent.title)
+            .replace(/\[company\.name\]/g, company.name)
+            .replace(/\[company\.founder\]/g, company.founder)
+            .replace(/\[company\.secretary\.name\]/g, secName)
+            .replace(/\[reportsTo\]/g, agent.reportsTo || "secretary");
+          writeFileSync(resolve(agentDir, "AGENTS.md"), filled);
+          console.log(`   ✅ agents/${folderName}/AGENTS.md 생성`);
+        }
+      }
+      break;
+    }
+  }
+}
+
 // ─── Proxy to shell scripts ───
 
 function proxyToScript(script, extraArgs = []) {
@@ -609,6 +1081,11 @@ switch (command) {
     }
     break;
 
+  case "doctor":
+  case "check":
+    await doctor();
+    break;
+
   case "heartbeat":
   case "hb":
     proxyToScript("heartbeat.sh", args.slice(1));
@@ -658,6 +1135,10 @@ Heartbeat:
   pc heartbeat status         상태 확인
   pc heartbeat set [id] [sec] 에이전트별 주기 설정
   pc hb                       (heartbeat 별칭)
+
+진단:
+  pc doctor                   시스템 점검 + 자동 수정
+  pc check                    (doctor 별칭)
 
 기타:
   pc org [subcommand]         org.sh 직접 호출
