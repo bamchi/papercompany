@@ -23,7 +23,7 @@ fi
 cd "$PROJECT_DIR"
 
 case $ROLE in
-  ceo|taeyeon|secretary) AGENT_ID="ceo" ;;
+  ceo|secretary) AGENT_ID="ceo" ;;
   engineer)              AGENT_ID="founding-engineer" ;;
   qa)                    AGENT_ID="tester" ;;
   mobile)                AGENT_ID="mobile-engineer" ;;
