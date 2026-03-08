@@ -1,0 +1,40 @@
+{
+  "name": "papercompany",
+  "version": "0.1.0",
+  "description": "AI company operating system — hire an AI secretary, build a company of AI agents",
+  "keywords": [
+    "ai",
+    "agents",
+    "multi-agent",
+    "claude",
+    "claude-code",
+    "github-issues",
+    "orchestration",
+    "ai-company"
+  ],
+  "author": "bamchi <help@hashscraper.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bamchi/papercompany.git"
+  },
+  "homepage": "https://github.com/bamchi/papercompany#readme",
+  "bugs": {
+    "url": "https://github.com/bamchi/papercompany/issues"
+  },
+  "bin": {
+    "papercompany": "./bin/cli.js",
+    "pc": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "templates/",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module"
+}
